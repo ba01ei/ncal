@@ -14,9 +14,10 @@ export default async function server(request: Request): Promise<Response> {
     // Ensure Notion API key is set
     const notionApiKey = Deno.env.get("NOTION_API_TOKEN");
 
-    // Get database ID from URL path: https://host/{notionDatabaseId}
+    // Get database ID from URL path: https://host/{notionDatabaseId}?tz=America/Los_Angeles
     const url = new URL(request.url);
     const databaseId = url.pathname.slice(1); // Remove leading "/"
+    const timezone = url.searchParams.get("tz") || "UTC";
 
     const datePropertyName = "Date";
     const donePropertyName = "Done";
@@ -30,7 +31,17 @@ export default async function server(request: Request): Promise<Response> {
 
     if (!databaseId) {
       return new Response(
-        "Missing database ID in URL path. Use: https://host/{notionDatabaseId}",
+        "Missing database ID in URL path. Use: https://host/{notionDatabaseId}?tz=America/Los_Angeles",
+        { status: 400 }
+      );
+    }
+
+    // Validate timezone
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    } catch {
+      return new Response(
+        `Invalid timezone: "${timezone}". Use IANA timezone names like "America/Los_Angeles". See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones`,
         { status: 400 }
       );
     }
@@ -87,9 +98,13 @@ export default async function server(request: Request): Promise<Response> {
     // Combine results
     const allPages = [...datedResponse.results, ...undatedResponse.results];
 
-    // Get today's date string for comparison (in user's perspective, use UTC date)
-    const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
+    // Get today's date string in the user's timezone
+    const now = new Date();
+    const todayStr = getDateInTimezone(now, timezone);
+
+    // Get tomorrow's date string in the user's timezone
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowStr = getDateInTimezone(tomorrow, timezone);
 
     // Track overdue events for aggregation
     const overdueEvents: { title: string; description: string }[] = [];
@@ -177,11 +192,7 @@ export default async function server(request: Request): Promise<Response> {
         .map((e) => `${e.title}\n${e.description}`)
         .join("\n\n");
 
-      // Create all-day event for today
-      const tomorrowDate = new Date(today);
-      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-      const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
-
+      // Create all-day event for today (in user's timezone)
       events.push({
         uid: `overdue-aggregate-${todayStr}`,
         title: aggregateTitle,
@@ -262,4 +273,15 @@ function formatICalDateTime(dateString: string): string {
   if (!dateString) return "";
   const date = new Date(dateString);
   return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+// Get date string (YYYY-MM-DD) in a specific timezone
+function getDateInTimezone(date: Date, timezone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(date); // Returns "YYYY-MM-DD" format
 }
