@@ -1,15 +1,28 @@
-import { Client } from "https://esm.sh/@notionhq/client";
+import { Client } from "npm:@notionhq/client@2.2.15";
 
 export default async function server(request: Request): Promise<Response> {
   try {
     // Ensure Notion API key is set
     const notionApiKey = Deno.env.get("NOTION_API_TOKEN");
-    const databaseId = Deno.env.get("NOTION_EVENTS_DATABASE_ID");
+
+    // Get database ID from URL path: https://host/{notionDatabaseId}
+    const url = new URL(request.url);
+    const databaseId = url.pathname.slice(1); // Remove leading "/"
+
     const datePropertyName = "Date";
     const maxEventAgeInMonths = 18;
 
-    if (!notionApiKey || !databaseId) {
-      return new Response("Missing Notion API credentials", { status: 500 });
+    if (!notionApiKey) {
+      return new Response("Missing NOTION_API_TOKEN environment variable", {
+        status: 500,
+      });
+    }
+
+    if (!databaseId) {
+      return new Response(
+        "Missing database ID in URL path. Use: https://host/{notionDatabaseId}",
+        { status: 400 }
+      );
     }
 
     const notion = new Client({ auth: notionApiKey });
@@ -40,25 +53,32 @@ export default async function server(request: Request): Promise<Response> {
     });
 
     // Transform Notion pages to iCal format
-    const events = response.results.map(page => {
-      // Adjust these property names to match your specific Notion database
-      const dateProperty = page.properties[datePropertyName];
+    const events = response.results
+      .map((page) => {
+        // Adjust these property names to match your specific Notion database
+        const dateProperty = page.properties[datePropertyName];
 
-      // Handle Notion's date object which can have start and end times
-      const start = dateProperty.date?.start ? new Date(dateProperty.date.start) : null;
-      const end = dateProperty.date?.end ? new Date(dateProperty.date.end) : start;
+        // Handle Notion's date object which can have start and end times
+        const start = dateProperty.date?.start
+          ? new Date(dateProperty.date.start)
+          : null;
+        const end = dateProperty.date?.end
+          ? new Date(dateProperty.date.end)
+          : start;
 
-      // Get page title (assuming first text property)
-      const title = page.properties.Name?.title?.[0]?.plain_text || "Untitled Event";
+        // Get page title (assuming first text property)
+        const title =
+          page.properties.Name?.title?.[0]?.plain_text || "Untitled Event";
 
-      return {
-        uid: page.id,
-        title,
-        start: start?.toISOString(),
-        end: end?.toISOString(),
-        description: page.public_url || page.url || "",
-      };
-    }).filter(event => event.start); // Remove events without start time
+        return {
+          uid: page.id,
+          title,
+          start: start?.toISOString(),
+          end: end?.toISOString(),
+          description: page.public_url || page.url || "",
+        };
+      })
+      .filter((event) => event.start); // Remove events without start time
 
     // Generate iCal feed
     const icalFeed = generateICalFeed(events);
@@ -72,7 +92,10 @@ export default async function server(request: Request): Promise<Response> {
     });
   } catch (error) {
     console.error("Error generating calendar feed:", error);
-    return new Response(`Error generating calendar feed: ${error.message}`, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+    return new Response(`Error generating calendar feed: ${message}`, {
+      status: 500,
+    });
   }
 }
 
@@ -83,7 +106,7 @@ function generateICalFeed(events) {
     "PRODID:-//Notion Calendar Export//EN",
   ];
 
-  events.forEach(event => {
+  events.forEach((event) => {
     icalLines.push(
       "BEGIN:VEVENT",
       `UID:${event.uid}`,
@@ -91,7 +114,7 @@ function generateICalFeed(events) {
       `DTSTART:${formatICalDate(event.start)}`,
       `DTEND:${formatICalDate(event.end)}`,
       `DESCRIPTION:${event.description}`,
-      "END:VEVENT",
+      "END:VEVENT"
     );
   });
 
