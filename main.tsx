@@ -19,6 +19,7 @@ export default async function server(request: Request): Promise<Response> {
     const databaseId = url.pathname.slice(1); // Remove leading "/"
 
     const datePropertyName = "Date";
+    const donePropertyName = "Done";
     const maxEventAgeInMonths = 18;
 
     if (!notionApiKey) {
@@ -41,12 +42,13 @@ export default async function server(request: Request): Promise<Response> {
     someMonthsAgo.setMonth(someMonthsAgo.getMonth() - maxEventAgeInMonths);
 
     // Fetch pages from Notion database
-    const response = await notion.databases.query({
+    // Query 1: Events with dates within the last N months
+    const datedResponse = await notion.databases.query({
       database_id: databaseId,
       filter: {
         and: [
           {
-            property: datePropertyName, // Adjust to match your actual date property name
+            property: datePropertyName,
             date: {
               is_not_empty: true,
             },
@@ -61,18 +63,73 @@ export default async function server(request: Request): Promise<Response> {
       },
     });
 
+    // Query 2: Events without dates that are not done (for overdue aggregate)
+    const undatedResponse = await notion.databases.query({
+      database_id: databaseId,
+      filter: {
+        and: [
+          {
+            property: datePropertyName,
+            date: {
+              is_empty: true,
+            },
+          },
+          {
+            property: donePropertyName,
+            checkbox: {
+              equals: false,
+            },
+          },
+        ],
+      },
+    });
+
+    // Combine results
+    const allPages = [...datedResponse.results, ...undatedResponse.results];
+
+    // Get today's date string for comparison (in user's perspective, use UTC date)
+    const today = new Date();
+    const todayStr = today.toISOString().split("T")[0];
+
+    // Track overdue events for aggregation
+    const overdueEvents: { title: string; description: string }[] = [];
+
     // Transform Notion pages to iCal format
-    const events = response.results
+    const events = allPages
       .map((page) => {
         // Skip partial responses that don't have properties
         if (!("properties" in page)) return null;
 
-        // Adjust these property names to match your specific Notion database
         // deno-lint-ignore no-explicit-any
-        const dateProperty = (page.properties as any)[datePropertyName];
+        const props = page.properties as any;
+        const dateProperty = props[datePropertyName];
         const startStr = dateProperty?.date?.start;
         const endStr = dateProperty?.date?.end;
 
+        // Get Done status
+        const doneProperty = props[donePropertyName];
+        const isDone = doneProperty?.checkbox === true;
+
+        // Get page title
+        const title = props.Name?.title?.[0]?.plain_text || "Untitled Event";
+
+        // Get URL for description
+        const pageUrl = "url" in page ? String(page.url) : "";
+
+        // Check if this is an overdue event:
+        // - Not done AND (no date OR end date is in the past)
+        if (!isDone) {
+          const effectiveEndStr = endStr || startStr;
+          const hasNoDate = !startStr;
+          const isInPast =
+            effectiveEndStr && effectiveEndStr.split("T")[0] < todayStr;
+
+          if (hasNoDate || isInPast) {
+            overdueEvents.push({ title, description: pageUrl });
+          }
+        }
+
+        // Skip events without start date for regular calendar display
         if (!startStr) return null;
 
         // Check if date has time component (contains 'T')
@@ -99,14 +156,6 @@ export default async function server(request: Request): Promise<Response> {
             : new Date(startStr).toISOString();
         }
 
-        // Get page title (assuming first text property)
-        // deno-lint-ignore no-explicit-any
-        const props = page.properties as any;
-        const title = props.Name?.title?.[0]?.plain_text || "Untitled Event";
-
-        // Get URL for description
-        const pageUrl = "url" in page ? page.url : "";
-
         return {
           uid: page.id,
           title,
@@ -117,6 +166,31 @@ export default async function server(request: Request): Promise<Response> {
         };
       })
       .filter((event): event is CalendarEvent => event !== null);
+
+    // Create aggregate overdue event if there are any overdue items
+    if (overdueEvents.length > 0) {
+      // Aggregate title: "event 1 • event 2 • event 3"
+      const aggregateTitle = overdueEvents.map((e) => e.title).join(" • ");
+
+      // Aggregate description: "event 1\ndescription 1\n\nevent 2\ndescription 2"
+      const aggregateDescription = overdueEvents
+        .map((e) => `${e.title}\n${e.description}`)
+        .join("\n\n");
+
+      // Create all-day event for today
+      const tomorrowDate = new Date(today);
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
+
+      events.push({
+        uid: `overdue-aggregate-${todayStr}`,
+        title: aggregateTitle,
+        start: todayStr,
+        end: tomorrowStr,
+        isAllDay: true,
+        description: aggregateDescription,
+      });
+    }
 
     // Generate iCal feed
     const icalFeed = generateICalFeed(events);
