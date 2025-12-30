@@ -189,10 +189,12 @@ export default async function server(request: Request): Promise<Response> {
       // Aggregate title: "event 1 • event 2 • event 3"
       const aggregateTitle = overdueEvents.map((e) => e.title).join(" • ");
 
-      // Aggregate description: "event 1\ndescription 1\n\nevent 2\ndescription 2"
-      const aggregateDescription = overdueEvents
+      // Aggregate description: database URL + "event 1\ndescription 1\n\nevent 2\ndescription 2"
+      const databaseUrl = `https://notion.so/${databaseId}`;
+      const eventDescriptions = overdueEvents
         .map((e) => `${e.title}\n${e.description}`)
         .join("\n\n");
+      const aggregateDescription = `${databaseUrl}\n\n${eventDescriptions}`;
 
       // Create all-day event for today (in user's timezone)
       events.push({
