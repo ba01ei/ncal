@@ -6,6 +6,7 @@ interface CalendarEvent {
   start: string;
   end: string;
   isAllDay: boolean;
+  isDone: boolean;
   description: string;
 }
 
@@ -177,6 +178,7 @@ export default async function server(request: Request): Promise<Response> {
           start,
           end,
           isAllDay,
+          isDone,
           description: pageUrl,
         };
       })
@@ -199,6 +201,7 @@ export default async function server(request: Request): Promise<Response> {
         start: todayStr,
         end: tomorrowStr,
         isAllDay: true,
+        isDone: false,
         description: aggregateDescription,
       });
     }
@@ -230,13 +233,16 @@ function generateICalFeed(events: CalendarEvent[]) {
   ];
 
   events.forEach((event) => {
+    // Prepend checkmark emoji if the event is done
+    const summary = event.isDone ? `✅ ${event.title}` : event.title;
+
     if (event.isAllDay) {
       // All-day event: use VALUE=DATE format (no time component)
       // This tells calendar apps to display it as an all-day event in user's timezone
       icalLines.push(
         "BEGIN:VEVENT",
         `UID:${event.uid}`,
-        `SUMMARY:${event.title}`,
+        `SUMMARY:${summary}`,
         `DTSTART;VALUE=DATE:${formatICalDateOnly(event.start)}`,
         `DTEND;VALUE=DATE:${formatICalDateOnly(event.end)}`,
         `DESCRIPTION:${event.description}`,
@@ -247,7 +253,7 @@ function generateICalFeed(events: CalendarEvent[]) {
       icalLines.push(
         "BEGIN:VEVENT",
         `UID:${event.uid}`,
-        `SUMMARY:${event.title}`,
+        `SUMMARY:${summary}`,
         `DTSTART:${formatICalDateTime(event.start)}`,
         `DTEND:${formatICalDateTime(event.end)}`,
         `DESCRIPTION:${event.description}`,
