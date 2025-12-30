@@ -1,5 +1,14 @@
 import { Client } from "npm:@notionhq/client@2.2.15";
 
+interface CalendarEvent {
+  uid: string;
+  title: string;
+  start: string;
+  end: string;
+  isAllDay: boolean;
+  description: string;
+}
+
 export default async function server(request: Request): Promise<Response> {
   try {
     // Ensure Notion API key is set
@@ -55,30 +64,59 @@ export default async function server(request: Request): Promise<Response> {
     // Transform Notion pages to iCal format
     const events = response.results
       .map((page) => {
-        // Adjust these property names to match your specific Notion database
-        const dateProperty = page.properties[datePropertyName];
+        // Skip partial responses that don't have properties
+        if (!("properties" in page)) return null;
 
-        // Handle Notion's date object which can have start and end times
-        const start = dateProperty.date?.start
-          ? new Date(dateProperty.date.start)
-          : null;
-        const end = dateProperty.date?.end
-          ? new Date(dateProperty.date.end)
-          : start;
+        // Adjust these property names to match your specific Notion database
+        // deno-lint-ignore no-explicit-any
+        const dateProperty = (page.properties as any)[datePropertyName];
+        const startStr = dateProperty?.date?.start;
+        const endStr = dateProperty?.date?.end;
+
+        if (!startStr) return null;
+
+        // Check if date has time component (contains 'T')
+        // Notion returns "2025-01-01" for date-only and "2025-01-01T10:00:00.000Z" for datetime
+        const isAllDay = !startStr.includes("T");
+
+        let start: string;
+        let end: string;
+
+        if (isAllDay) {
+          // All-day event: use date-only format
+          // For iCal VALUE=DATE format, end date is exclusive
+          // So "Jan 1" becomes start=Jan 1, end=Jan 2
+          // And "Jan 1 - Jan 3" becomes start=Jan 1, end=Jan 4
+          start = startStr; // "2025-01-01"
+          const endDate = endStr ? new Date(endStr) : new Date(startStr);
+          endDate.setDate(endDate.getDate() + 1); // Add one day (exclusive end)
+          end = endDate.toISOString().split("T")[0]; // "2025-01-02" or "2025-01-04"
+        } else {
+          // Timed event: use full datetime
+          start = new Date(startStr).toISOString();
+          end = endStr
+            ? new Date(endStr).toISOString()
+            : new Date(startStr).toISOString();
+        }
 
         // Get page title (assuming first text property)
-        const title =
-          page.properties.Name?.title?.[0]?.plain_text || "Untitled Event";
+        // deno-lint-ignore no-explicit-any
+        const props = page.properties as any;
+        const title = props.Name?.title?.[0]?.plain_text || "Untitled Event";
+
+        // Get URL for description
+        const pageUrl = "url" in page ? page.url : "";
 
         return {
           uid: page.id,
           title,
-          start: start?.toISOString(),
-          end: end?.toISOString(),
-          description: page.public_url || page.url || "",
+          start,
+          end,
+          isAllDay,
+          description: pageUrl,
         };
       })
-      .filter((event) => event.start); // Remove events without start time
+      .filter((event): event is CalendarEvent => event !== null);
 
     // Generate iCal feed
     const icalFeed = generateICalFeed(events);
@@ -99,7 +137,7 @@ export default async function server(request: Request): Promise<Response> {
   }
 }
 
-function generateICalFeed(events) {
+function generateICalFeed(events: CalendarEvent[]) {
   const icalLines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -107,15 +145,30 @@ function generateICalFeed(events) {
   ];
 
   events.forEach((event) => {
-    icalLines.push(
-      "BEGIN:VEVENT",
-      `UID:${event.uid}`,
-      `SUMMARY:${event.title}`,
-      `DTSTART:${formatICalDate(event.start)}`,
-      `DTEND:${formatICalDate(event.end)}`,
-      `DESCRIPTION:${event.description}`,
-      "END:VEVENT"
-    );
+    if (event.isAllDay) {
+      // All-day event: use VALUE=DATE format (no time component)
+      // This tells calendar apps to display it as an all-day event in user's timezone
+      icalLines.push(
+        "BEGIN:VEVENT",
+        `UID:${event.uid}`,
+        `SUMMARY:${event.title}`,
+        `DTSTART;VALUE=DATE:${formatICalDateOnly(event.start)}`,
+        `DTEND;VALUE=DATE:${formatICalDateOnly(event.end)}`,
+        `DESCRIPTION:${event.description}`,
+        "END:VEVENT"
+      );
+    } else {
+      // Timed event: use full datetime with Z suffix (UTC)
+      icalLines.push(
+        "BEGIN:VEVENT",
+        `UID:${event.uid}`,
+        `SUMMARY:${event.title}`,
+        `DTSTART:${formatICalDateTime(event.start)}`,
+        `DTEND:${formatICalDateTime(event.end)}`,
+        `DESCRIPTION:${event.description}`,
+        "END:VEVENT"
+      );
+    }
   });
 
   icalLines.push("END:VCALENDAR");
@@ -123,7 +176,15 @@ function generateICalFeed(events) {
   return icalLines.join("\r\n");
 }
 
-function formatICalDate(dateString) {
+// Format for all-day events: YYYYMMDD (no time)
+function formatICalDateOnly(dateString: string): string {
+  if (!dateString) return "";
+  // dateString is already "YYYY-MM-DD" format from our processing
+  return dateString.replace(/-/g, "");
+}
+
+// Format for timed events: YYYYMMDDTHHMMSSZ
+function formatICalDateTime(dateString: string): string {
   if (!dateString) return "";
   const date = new Date(dateString);
   return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
