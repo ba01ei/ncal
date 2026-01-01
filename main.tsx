@@ -1,4 +1,8 @@
 import { Client } from "npm:@notionhq/client@2.2.15";
+import type {
+  QueryDatabaseParameters,
+  QueryDatabaseResponse,
+} from "npm:@notionhq/client@2.2.15/build/src/api-endpoints";
 
 interface CalendarEvent {
   uid: string;
@@ -8,6 +12,27 @@ interface CalendarEvent {
   isAllDay: boolean;
   isDone: boolean;
   description: string;
+}
+
+// Helper to fetch all pages from a Notion database query (handles pagination)
+async function queryAllPages(
+  notion: Client,
+  params: QueryDatabaseParameters
+): Promise<QueryDatabaseResponse["results"]> {
+  const allResults: QueryDatabaseResponse["results"] = [];
+  let cursor: string | undefined = undefined;
+
+  do {
+    const response = await notion.databases.query({
+      ...params,
+      start_cursor: cursor,
+      page_size: 100, // Maximum allowed by Notion API
+    });
+    allResults.push(...response.results);
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined;
+  } while (cursor);
+
+  return allResults;
 }
 
 export default async function server(request: Request): Promise<Response> {
@@ -22,7 +47,7 @@ export default async function server(request: Request): Promise<Response> {
 
     const datePropertyName = "Date";
     const donePropertyName = "Done";
-    const maxEventAgeInMonths = 18;
+    const maxEventAgeInMonths = 12;
 
     if (!notionApiKey) {
       return new Response("Missing NOTION_API_TOKEN environment variable", {
@@ -53,9 +78,9 @@ export default async function server(request: Request): Promise<Response> {
     const someMonthsAgo = new Date();
     someMonthsAgo.setMonth(someMonthsAgo.getMonth() - maxEventAgeInMonths);
 
-    // Fetch pages from Notion database
-    // Query 1: Events with dates within the last N months
-    const datedResponse = await notion.databases.query({
+    // Fetch pages from Notion database with pagination
+    // Query 1: Events with dates within the last N months, sorted by date descending
+    const datedResults = await queryAllPages(notion, {
       database_id: databaseId,
       filter: {
         and: [
@@ -73,10 +98,17 @@ export default async function server(request: Request): Promise<Response> {
           },
         ],
       },
+      sorts: [
+        {
+          property: datePropertyName,
+          direction: "descending",
+        },
+      ],
     });
 
     // Query 2: Events without dates that are not done (for overdue aggregate)
-    const undatedResponse = await notion.databases.query({
+    // Sorted by last_edited_time descending
+    const undatedResults = await queryAllPages(notion, {
       database_id: databaseId,
       filter: {
         and: [
@@ -94,10 +126,16 @@ export default async function server(request: Request): Promise<Response> {
           },
         ],
       },
+      sorts: [
+        {
+          timestamp: "last_edited_time",
+          direction: "descending",
+        },
+      ],
     });
 
     // Combine results
-    const allPages = [...datedResponse.results, ...undatedResponse.results];
+    const allPages = [...datedResults, ...undatedResults];
 
     // Get today's date string in the user's timezone
     const now = new Date();
