@@ -204,10 +204,15 @@ export default async function server(request: Request): Promise<Response> {
           end = endDate.toISOString().split("T")[0]; // "2025-01-02" or "2025-01-04"
         } else {
           // Timed event: use full datetime
-          start = new Date(startStr).toISOString();
-          end = endStr
-            ? new Date(endStr).toISOString()
-            : new Date(startStr).toISOString();
+          const startDate = new Date(startStr);
+          start = startDate.toISOString();
+          if (endStr) {
+            end = new Date(endStr).toISOString();
+          } else {
+            // Default to 30 minutes duration if no end time specified
+            const endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
+            end = endDate.toISOString();
+          }
         }
 
         return {
